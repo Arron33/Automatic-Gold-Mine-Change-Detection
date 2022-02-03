@@ -1,0 +1,781 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2636
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww29740\viewh16180\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 // Artisinal Gold Mine Change Detection Code //\
+\
+// IMPORTS //\
+\
+var s2 = ee.ImageCollection("COPERNICUS/S2_SR");\
+var DSM = ee.Image("JAXA/ALOS/AW3D30/V2_2");\
+\
+\
+\
+// GEOMETRY AND VIS PERAMS //\
+\
+var boundary = Abora.geometry()\
+Map.setCenter(-1.9052171710905408, 6.0599894955573905, 11);\
+var boundaryarea = boundary.area()\
+print('Boundary Area in km',boundaryarea.divide(1000000))\
+\
+var visParams = \{\
+  bands: ['B4', 'B3', 'B2'], \
+  min: 0, \
+  max: 0.3, \
+  gamma: 1.2\
+\};\
+var cloudmaskvis = \{\
+  bands: ['classification'],\
+  palette: ['white','black', 'green'],\
+  min: 0,\
+  max: 2\
+\};\
+var LCVis = \{\
+  bands: ['classification'],\
+  palette: ['006400', 'ffbb22', 'ffff4c', 'f096ff', 'fa0000', 'b4b4b4', 'f0f0f0', '0064c8', '0096a0', '00cf75', 'fae6a0'],\
+  min: 0,\
+  max: 10\
+\};\
+var ESAVis = \{\
+  bands: ['Map'],\
+\};\
+\
+var atmovis1 = \{bands:['B4','B3','B2'], min: 0.0, max: 0.2, gamma: 1\}; //atmo vis\
+var siac = require('users/marcyinfeng/utils:SIAC');\
+\
+var empty = ee.Image().byte();\
+var outline = empty.paint(\{\
+  featureCollection: boundary,\
+  color: 1,\
+  width: 1\
+\});\
+Map.addLayer(outline, \{palette: 'FFFFFF'\}, 'Edges');\
+\
+\
+\
+// CLOUD MASK //\
+// Training SVM classifier to detect clouds\
+\
+CloudMaskData = CloudMaskData.remap(['clouds','shaddows','other'],[1,2,3],'Class');\
+\
+var cloudclassifier = ee.Classifier.libsvm(\{\
+  kernelType: 'RBF',                  //hyper peram tuned in paper\
+  gamma: 1,                           //radius of effect to grouping\
+  cost: 100,                             //cost to each wrong data point\
+\})\
+.train(\{\
+  features: CloudMaskData,  \
+  classProperty: 'Class',\
+  inputProperties: ['B1','B2','B3','B4','B5','B6','B7','B8','B9','B11','B12',/*'NDVI'*/]\
+\});\
+\
+\
+\
+// DATA FUSION //\
+// Function adds several indcies to the image\
+\
+var addIndices = function(image) \{\
+  var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']);     //norm dif veg\
+  var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);    //norm dif built up index\
+  var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']);  //mod norm dif water\
+  var bsi = image.expression(                                               //bare soil\
+      '(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', \{\
+        'X': image.select('B11'), //swir1\
+        'Y': image.select('B4'),  //red\
+        'A': image.select('B8'), // nir\
+        'B': image.select('B2'), // blue\
+  \}).rename('bsi');\
+  return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi)\
+\}\
+\
+\
+\
+// PCA //\
+// Function takes in an image and outputs the same image with PCA bands added\
+\
+function PCA(maskedImage)\{\
+  var image = maskedImage.unmask()\
+  var scale = 20;\
+  var region = boundary;\
+  var bandNames = image.bandNames();\
+  var meanDict = image.reduceRegion(\{\
+    reducer: ee.Reducer.mean(),\
+    geometry: region,\
+    scale: scale,\
+    maxPixels: 1e9,\
+    bestEffort: true,\
+    tileScale: 16\
+  \});\
+  var means = ee.Image.constant(meanDict.values(bandNames));\
+  var centered = image.subtract(means);\
+  var getNewBandNames = function(prefix) \{\
+    var seq = ee.List.sequence(1, bandNames.length());\
+    return seq.map(function(b) \{\
+      return ee.String(prefix).cat(ee.Number(b).int());\
+    \});\
+  \};\
+  var getPrincipalComponents = function(centered, scale, region) \{\
+    var arrays = centered.toArray();\
+    \
+    var covar = arrays.reduceRegion(\{\
+      reducer: ee.Reducer.centeredCovariance(),\
+      geometry: region,\
+      scale: scale,\
+      maxPixels: 1e9,\
+      bestEffort: true,\
+      tileScale: 16\
+    \});\
+\
+    var covarArray = ee.Array(covar.get('array'));\
+\
+    var eigens = covarArray.eigen();\
+\
+    var eigenValues = eigens.slice(1, 0, 1);\
+    \
+    var eigenValuesList = eigenValues.toList().flatten()\
+    var total = eigenValuesList.reduce(ee.Reducer.sum())\
+    var percentageVariance = eigenValuesList.map(function(item) \{\
+      return (ee.Number(item).divide(total)).multiply(100).format('%.2f')\
+    \})\
+    //print('Percentage Variance of Each Component', percentageVariance)\
+    var eigenVectors = eigens.slice(1, 1);\
+    var arrayImage = arrays.toArray(1);\
+\
+    var principalComponents = ee.Image(eigenVectors).matrixMultiply(arrayImage);\
+\
+    var sdImage = ee.Image(eigenValues.sqrt())\
+      .arrayProject([0]).arrayFlatten([getNewBandNames('sd')]);\
+\
+    return principalComponents\
+      .arrayProject([0])\
+      .arrayFlatten([getNewBandNames('pc')])\
+      .divide(sdImage);\
+  \};\
+  var pcImage = getPrincipalComponents(centered, scale, region);\
+  return pcImage.mask(maskedImage.mask());\
+\}\
+\
+\
+\
+// FILTER AND COMPOSITE 2020 IMAGE //\
+\
+var filtered = s2\
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))\
+  .filter(ee.Filter.date('2020-01-01', '2020-12-31'))\
+  .filter(ee.Filter.bounds(boundary))\
+  .select('B.*')\
+var composite = filtered.median().clip(boundary).divide(10000)\
+var composite = addIndices(composite);\
+\
+Map.addLayer(composite, visParams, 'RGB20');\
+\
+var cloudmask = composite.classify(cloudclassifier);\
+var cloudmask = cloudmask.gt(1.5).selfMask();\
+Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask 2020');\
+var composite = composite.updateMask(cloudmask)\
+\
+var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])\
+var composite = composite.addBands(pca)\
+\
+var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');\
+var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');\
+var composite = composite.addBands(elev).addBands(slope);\
+\
+\
+\
+// DATASET GENERATION //\
+\
+// ESA 10m WORLD COVER DATASET //\
+var world_cover = ee.ImageCollection("ESA/WorldCover/v100").first();\
+Map.addLayer(world_cover, ESAVis, "ESA Landcover");\
+print('ESA Landcover', world_cover)\
+\
+var globalseed = 10\
+\
+// Dataset For 10 TREE\
+var dataset10 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 2000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset10 = dataset10.filter(ee.Filter.equals('Map', 10));\
+var dataset10 = dataset10.randomColumn();\
+var dataset10 = dataset10.filter(ee.Filter.lt('random', 1));\
+print('Dataset10', dataset10);\
+\
+// Dataset For 20 SHRUB\
+var dataset20 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 2000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset20 = dataset20.filter(ee.Filter.equals('Map', 20));\
+var dataset20 = dataset20.randomColumn('random');\
+var dataset20 = dataset20.filter(ee.Filter.lt('random', 1));\
+print('Dataset20', dataset20);\
+\
+// Dataset For 30 GRASS\
+var dataset30 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 2000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset30 = dataset30.filter(ee.Filter.equals('Map', 30));\
+var dataset30 = dataset30.randomColumn('random');\
+var dataset30 = dataset30.filter(ee.Filter.lt('random', 1));\
+print('Dataset30', dataset30);\
+\
+// Dataset For 40 CROP\
+var dataset40 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 2000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset40 = dataset40.filter(ee.Filter.equals('Map', 40));\
+var dataset40 = dataset40.randomColumn('random');\
+var dataset40 = dataset40.filter(ee.Filter.lt('random', 1));\
+print('Dataset40', dataset40);\
+\
+// Dataset For 50 URBAN\
+var dataset50 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 5000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset50 = dataset50.filter(ee.Filter.equals('Map', 50));\
+var dataset50 = dataset50.randomColumn('random');\
+var dataset50 = dataset50.filter(ee.Filter.lt('random', 1));\
+print('Dataset50', dataset50);\
+\
+// Dataset For 60 BARE\
+var dataset60 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 5000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset60 = dataset60.filter(ee.Filter.equals('Map', 60));\
+var dataset60 = dataset60.randomColumn('random');\
+var dataset60 = dataset60.filter(ee.Filter.lt('random', 1));\
+print('Dataset60', dataset60);\
+\
+// Dataset For 70\
+// var dataset70 = world_cover.sample(\{\
+//   region: boundary,\
+//   geometries: true,\
+//   numPixels: 2000,  //max 5000\
+//   seed: globalseed\
+// \});\
+\
+// var dataset70 = dataset70.filter(ee.Filter.equals('Map', 70));\
+// var dataset70 = dataset70.randomColumn('random');\
+// var dataset70 = dataset70.filter(ee.Filter.lt('random', 1));\
+// print('Dataset70', dataset70);\
+\
+// Dataset For 80 WATER\
+var dataset80 = world_cover.sample(\{\
+  region: boundary,\
+  geometries: true,\
+  numPixels: 2000,  //max 5000\
+  seed: globalseed\
+\});\
+\
+var dataset80 = dataset80.filter(ee.Filter.equals('Map', 80));\
+var dataset80 = dataset80.randomColumn('random');\
+var dataset80 = dataset80.filter(ee.Filter.lt('random', 1));\
+print('Dataset80', dataset80);\
+\
+// Dataset For 90\
+// var dataset90 = world_cover.sample(\{\
+//   region: boundary,\
+//   geometries: true,\
+//   numPixels: 2000,  //max 5000\
+//   seed: globalseed\
+// \});\
+\
+// var dataset90 = dataset90.filter(ee.Filter.equals('Map', 90));\
+// var dataset90 = dataset90.randomColumn('random');\
+// var dataset90 = dataset90.filter(ee.Filter.lt('random', 1));\
+// print('Dataset90', dataset90);\
+\
+// Dataset For 95\
+// var dataset95 = world_cover.sample(\{\
+//   region: boundary,\
+//   geometries: true,\
+//   numPixels: 2000,  //max 5000\
+//   seed: globalseed\
+// \});\
+\
+// var dataset95 = dataset95.filter(ee.Filter.equals('Map', 95));\
+// var dataset95 = dataset95.randomColumn('random');\
+// var dataset95 = dataset95.filter(ee.Filter.lt('random', 1));\
+// print('Dataset95', dataset95);\
+\
+// Dataset For 100\
+// var dataset100 = world_cover.sample(\{\
+//   region: boundary,\
+//   geometries: true,\
+//   numPixels: 2000,  //max 5000\
+//   seed: globalseed\
+// \});\
+\
+// var dataset100 = dataset100.filter(ee.Filter.equals('Map', 100));\
+// var dataset100 = dataset100.randomColumn('random');\
+// var dataset100 = dataset100.filter(ee.Filter.lt('random', 1));\
+// print('Dataset100', dataset100);\
+\
+// Dataset Merging\
+var dataset = dataset10 //Tree\
+  //.merge(dataset20)   //Shrub\
+  //.merge(dataset30)   //Grass\
+  .merge(dataset40)     //Crop\
+  .merge(dataset50)     //Built up\
+  .merge(dataset60)     //Bare\
+  //.merge(dataset70)   //Snow\
+  .merge(dataset80)     //Water\
+  //.merge(dataset90)\
+  //.merge(dataset95)\
+  //.merge(dataset100);\
+\
+// Data Points Visualisation\
+Map.addLayer(dataset,	null, 'New Data Points');\
+print('Total Dataset', dataset);\
+\
+\
+\
+// DATASET SPLITTING //\
+\
+var dataset = dataset.remap([10,20,30,40,50,60,70,80,90,95,100], [0,1,2,3,4,5,6,7,8,9,10], 'Map')\
+var dataset = dataset.randomColumn();\
+var trainingdata = dataset.filter(ee.Filter.lt('random', 0.7));      // Use 0.7 for larger dataset\
+var validationdata = dataset.filter(ee.Filter.gte('random', 0.7));\
+print(trainingdata)\
+//Map.addLayer(validationdata, null, 'Validation Data Points')\
+\
+var training = composite.sampleRegions(\{\
+  collection: trainingdata,\
+  properties: ['Map'],\
+  scale: 10,\
+  tileScale: 16\
+\});\
+\
+print('Training Dataset', training)\
+\
+\
+\
+// SVM CLASSIFIER //  Replaced by main RF classifier as SVM wasnt working correctly\
+\
+// var classifier = ee.Classifier.libsvm(\{\
+//   svmType: 'C_SVC',\
+//   kernelType: 'RBF',\
+//   gamma: 0.1,                           //radius of effect to grouping\
+//   cost: 7,                             //cost to each wrong data point\
+//   //decisionProcedure: 'Margin',\
+//   //shrinking: false\
+// \})\
+// .train(\{\
+//   features: training,  \
+//   classProperty: 'Map',\
+//   inputProperties: composite.bandNames()\
+// \});\
+\
+\
+\
+// RF CLASSIFIER //\
+var classifier = ee.Classifier.smileRandomForest(32) //hyperperam tuned\
+.train(\{\
+  features: training,  \
+  classProperty: 'Map',\
+  inputProperties: composite.bandNames()\
+\});\
+\
+\
+\
+// 2020 //\
+\
+var classified = composite.classify(classifier);\
+Map.addLayer(classified, LCVis, '2020');\
+\
+\
+\
+// ACCURACY ASSESSMENT //\
+\
+var classified_test = classified.sampleRegions(\{\
+  collection: validationdata,\
+  properties: ['Map'],\
+  scale: 10,\
+  tileScale: 16\
+\});\
+  \
+var testConfusionMatrix = classified_test.errorMatrix('classification','Map')\
+\
+print("Overall Accuracy", testConfusionMatrix.accuracy());\
+print('Confusion Matrix', testConfusionMatrix);\
+print("Consumer's Accuracy", testConfusionMatrix.consumersAccuracy());\
+print("Producer's Accuracy", testConfusionMatrix.producersAccuracy());\
+print("Kappa", testConfusionMatrix.kappa());  //ballence dataset and see effect on kappa\
+\
+\
+\
+// RF HYPERPERAMETER TUNING //\
+\
+print(classifier.explain())\
+\
+var test = composite.sampleRegions(\{\
+  collection: validationdata,\
+  properties: ['Map'],\
+  scale: 10,\
+  tileScale: 16\
+\});\
+\
+var numTreesList = ee.List.sequence(50, 100, 1);\
+\
+var accuracies = numTreesList.map(function(numTrees) \{\
+  var classifier = ee.Classifier.smileRandomForest(numTrees)\
+      .train(\{\
+        features: training,\
+        classProperty: 'Map',\
+        inputProperties: composite.bandNames()\
+      \});\
+  return test\
+    .classify(classifier)\
+    .errorMatrix('Map', 'classification')\
+    //.kappa();\
+    .accuracy();\
+\});\
+\
+var chart = ui.Chart.array.values(\{\
+  array: ee.Array(accuracies),\
+  axis: 0,\
+  xLabels: numTreesList\
+  \}).setOptions(\{\
+      title: 'Hyperparameter Tuning for the numberOfTrees Parameters',\
+      vAxis: \{title: 'Validation Accuracy'\},\
+      hAxis: \{title: 'Number of Tress', gridlines: \{count: 15\}\}\
+  \});\
+print(chart)\
+\
+\
+ \
+// SVM HYPERPERAMETER TUNING //   Replaced SVM grid search with RF graph above\
+\
+// var composite_test = composite.sampleRegions(\{\
+//   collection: validationdata,\
+//   properties: ['Map'],\
+//   scale: 10,\
+//   tileScale: 16\
+// \});\
+\
+// var gammalist = ee.List.sequence(0, 2, 0.1);\
+// var costlist = ee.List.sequence(1, 30, 1);\
+\
+// var accuracies = gammalist.map(function(gamma) \{\
+//   return costlist.map(function(cost) \{\
+//     var classifier = ee.Classifier.libsvm(\{\
+//         kernelType: 'RBF',\
+//         gamma: gamma,                   //radius of effect to grouping\
+//         cost: cost                      //cost to each wrong data point\
+//     \})\
+//     .train(\{\
+//       features: training,\
+//       classProperty: 'Map',\
+//       inputProperties: composite.bandNames()\
+//     \});\
+\
+//     var accuracy = composite_test\
+//       .classify(classifier)\
+//       .errorMatrix('Map', 'classification')\
+//       .accuracy();\
+\
+//     return ee.Feature(null, \{\
+//       'accuracy': accuracy,\
+//       'Gamma': gamma,\
+//       'Cost': cost\})\
+//   \})\
+// \}).flatten()\
+// var resultFC = ee.FeatureCollection(accuracies)\
+\
+// Export.table.toDrive(\{\
+//   collection: resultFC,\
+//   description: 'Gamma_Cost_Tuning_Results',\
+//   folder: 'earthengine',\
+//   fileNamePrefix: 'Gamma_Cost',\
+//   fileFormat: 'CSV'\})\
+\
+\
+\
+// FIRST DATE //\
+\
+var filtered = s2\
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))\
+  .filter(ee.Filter.date('2019-01-01', '2019-12-31'))\
+  .filter(ee.Filter.bounds(boundary))\
+  .select('B.*')\
+var composite = filtered.median().clip(boundary).divide(10000) \
+var composite = addIndices(composite);\
+\
+Map.addLayer(composite, visParams, 'RGB FIRST');\
+\
+var cloudmask = composite.classify(cloudclassifier);\
+var cloudmask = cloudmask.gt(1.5).selfMask();\
+Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask FIRST');\
+var composite = composite.updateMask(cloudmask)\
+\
+var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])\
+var composite = composite.addBands(pca)\
+\
+var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');\
+var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');\
+var composite = composite.addBands(elev).addBands(slope);\
+\
+var classified = composite.classify(classifier);\
+Map.addLayer(classified, LCVis, 'LC FIRST');\
+\
+var classified19 = classified;\
+\
+\
+\
+// SECOND DATE //\
+\
+var filtered = s2\
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))\
+  .filter(ee.Filter.date('2021-01-01', '2021-12-31'))\
+  .filter(ee.Filter.bounds(boundary))\
+  .select('B.*')\
+var composite = filtered.median().clip(boundary).divide(10000) \
+var composite = addIndices(composite);\
+\
+Map.addLayer(composite, visParams, 'RGB SECOND');\
+\
+var cloudmask = composite.classify(cloudclassifier);\
+var cloudmask = cloudmask.gt(1.5).selfMask();\
+Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask SECOND');\
+var composite = composite.updateMask(cloudmask)\
+\
+var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])\
+var composite = composite.addBands(pca)\
+\
+\
+var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');\
+var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');\
+var composite = composite.addBands(elev).addBands(slope);\
+\
+var classified = composite.classify(classifier);\
+Map.addLayer(classified, LCVis, 'LC SECOND');\
+\
+var classified21 = classified;\
+\
+\
+\
+// Displaying Second Date PCA Image\
+// var pcaVisParams = \{bands: ['pc1', 'pc2', 'pc3'], min: -2, max: 2\};\
+// Map.addLayer(pca, pcaVisParams, 'Principal Components');\
+\
+\
+\
+// CHANGE IMAGE GENERATION //\
+\
+var classified19 = classified19.remap([0, 1, 2, 3,4,5,6,7,8,9,10], [1, 2, 3, 4,5,6,7,8,9,10,11])\
+var classified21 = classified21.remap([0, 1, 2, 3,4,5,6,7,8,9,10], [1, 2, 3, 4,5,6,7,8,9,10,11])\
+\
+var classes = [1,2,3,4,5,6,7,8,9,10,11];\
+\
+var changes = ee.ImageCollection(ee.List(\
+  classes.map(function (from, i) \{\
+    return classes.map(function (to,  j) \{\
+      var changeValue = classes.length * i + j + 1\
+      return classified19.eq(from)\
+      .and(classified21.eq(to))\
+      .multiply(changeValue)\
+      .int8()\
+    \})\
+  \})\
+).flatten()).reduce(ee.Reducer.sum());\
+\
+\
+var changebt = changes.eq(56);  //changes value 56 = change from bare to tree class\
+//var changeut = changes.eq(45);\
+//var changegt = changes.eq(23);\
+\
+var forrestregrowth = changebt;//.add(changeut);//.add(changegt);\
+var forrestregrowth = forrestregrowth.gt(0.5).selfMask();\
+Map.addLayer(forrestregrowth, \{min:0, max:1, palette: ['white', '#00FF00']\}, 'Vegetation Regrowth')\
+\
+var changetb = changes.eq(6);   //changes value 6 = change from tree to bare class\
+//var changetu = changes.eq(5);\
+//var changetg = changes.eq(3);\
+\
+var deforrest = changetb;\
+var deforrest = deforrest.gt(0.5).selfMask();\
+Map.addLayer(deforrest, \{min:0, max:1, palette: ['white', '#ff0000']\}, 'New Mine Activity')\
+\
+\
+// Number of pixels changed between classes\
+var merged = classified19.multiply(100).add(classified21).rename('transitions')\
+\
+var transitionMatrix = merged.reduceRegion(\{\
+  reducer: ee.Reducer.frequencyHistogram(), \
+  geometry: boundary,\
+  maxPixels: 1e10,\
+  scale:16,\
+  tileScale: 16\
+\})\
+\
+print('Pixel Transitions', transitionMatrix.get('transitions')) \
+\
+\
+\
+// EXPORTS //\
+\
+// Vegitation Regrowth\
+// Export.image.toDrive(\{\
+//   image: forrestregrowth,\
+//   description: 'TOA_RE_',\
+//   fileNamePrefix: 'TOA_RE_',\
+//   scale: 10,\
+//   region: boundary,\
+//   maxPixels: 1e9,\
+//   folder: 'GEE Final Images'\
+// \});\
+\
+// Deforestation\
+// Export.image.toDrive(\{\
+//   image: deforrest,\
+//   description: 'TOA_DE_',\
+//   fileNamePrefix: 'TOA_DE_',\
+//   scale: 10,\
+//   region: boundary,\
+//   maxPixels: 1e9,\
+//   folder: 'GEE Final Images'\
+// \});\
+\
+// RGB Image\
+// var filtered = s2\
+//   .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))\
+//   .filter(ee.Filter.date('2021-01-01', '2021-12-31'))\
+//   .filter(ee.Filter.bounds(boundary))\
+// // .map(cloudmasker)\
+//   .select('B.*')\
+// var exportimage = filtered.median().clip(boundary).divide(10000) \
+\
+// Classification\
+// Export.image.toDrive(\{\
+//   image: classified21.select('classification'),\
+//   description: '21LC',\
+//   fileNamePrefix: '21LC',\
+//   scale: 10,\
+//   region: boundary,\
+//   maxPixels: 1e9,\
+//   folder: 'GEE Final Images'\
+// \});\
+\
+// Boundary Polygon\
+// var fcboundary = ee.FeatureCollection(boundary);\
+// Export.table.toDrive(\{\
+//   collection: fcboundary,\
+\
+//   folder: 'GEE Images'\
+// \});\
+\
+// Training Data\
+// Export.table.toDrive(\{\
+//   collection: training,\
+//   description: 'Training Data',\
+//   folder: 'earthengine',\
+//   fileNamePrefix: 'Training Data',\
+//   fileFormat: 'CSV'\})\
+\
+\
+\
+// EXPORT AVERAGE SPECTURAL SIGNATURE OF CLASSES //\
+\
+var bands = composite.bandNames()\
+var numBands = bands.length()\
+var bandsWithClass = bands.add('Map')\
+var classIndex = bandsWithClass.indexOf('Map')\
+\
+\
+var combinedReducer = ee.Reducer.mean().combine(\{\
+  reducer2: ee.Reducer.stdDev(),\
+  sharedInputs: true\})\
+  \
+var repeatedReducer = combinedReducer.repeat(numBands).group(classIndex)\
+\
+var pointstats = training.reduceColumns(\{\
+    selectors: bands.add('Map'),\
+    reducer: repeatedReducer,\
+\})\
+\
+var groups = ee.List(pointstats.get('groups'))\
+\
+var classNames = ee.List(['tree', 'shrub', 'grass', 'crop','urban','bare','7','water','9','10','11','12','13'])\
+\
+var fc = ee.FeatureCollection(groups.map(function(item) \{\
+  // Extract the means\
+  var values = ee.Dictionary(item).get('mean')\
+  var groupNumber = ee.Dictionary(item).get('group')\
+  var properties = ee.Dictionary.fromLists(bands, values)\
+  var withClass = properties.set('class', classNames.get(groupNumber))\
+  return ee.Feature(null, withClass)\
+\}))\
+\
+// Export.table.toDrive(\{\
+//   collection: fc,\
+//   description: 'Spectral_Class_Results',\
+//   folder: 'GEE Final Images',\
+//   fileNamePrefix: 'spectralresults',\
+//   fileFormat: 'CSV'\})\
+\
+\
+\
+// ATMOSPHERIC CORRECTION //  Atempted atmospheric correction\
+\
+// var atmovis1 = \{bands:"B4,B3,B2", min: 0.0, max: 0.2, gamma: 1\};\
+// var visParams = \{\
+//   bands: ['B4', 'B3', 'B2'], \
+//   min: 0, \
+//   max: 0.3, \
+//   gamma: 1.2\
+// \};\
+\
+// var filteredtoa = ee.ImageCollection("COPERNICUS/S2")\
+//   .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))\
+//   .filter(ee.Filter.date('2018-01-01', '2018-12-31'))\
+//   .filter(ee.Filter.bounds(boundary))\
+//   .select('B.*')\
+// var composite = filteredtoa.median().clip(boundary).divide(1000) \
+// print(composite, 'comp')\
+\
+// Map.addLayer(composite, visParams, 'RGB19');\
+\
+//                 //['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12']\
+// // - Import the SIAC atmospheric correction module\
+// var siac = require('users/marcyinfeng/utils:SIAC');\
+\
+// // - Apply SIAC and retrieve bottom of atmosphere (BOA) reflectance\
+// // var L7_boa = siac.get_l7_sur(L7_col.first());\
+// // var L8_boa = siac.get_l8_sur(L8_col.first()); \
+// var atmocorrect = siac.get_sur(filteredtoa.first().clip(boundary)); \
+// print(atmocorrect)\
+\
+\
+// - Check and visualization\
+// var Color_comp_01 = \{bands:"B4,B3,B2", min: 0.0, max: 0.2, gamma: 1\};\
+// var Color_comp =    \{bands:"B4,B3,B2", min:200, max:2000, gamma: 1\};\
+// Map.addLayer(composite, Color_comp, 'TOA');\
+// Map.addLayer(atmocorrect, atmovis1, 'BOA');\
+// Map.centerObject(filteredtoa.first())}
