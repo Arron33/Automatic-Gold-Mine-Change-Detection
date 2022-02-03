@@ -8,4 +8,4 @@ The current program automaticaly generates a training dataset using the ESA Worl
 
 The code is accesible through the link above (given the user has a Google Earth Engine account) or via the text file in this repo.
 
-Ive included a figure from my masters project to demonstrate some of the results my program.
+Ive included a figure from my masters project to demonstrate some of my programs results.
