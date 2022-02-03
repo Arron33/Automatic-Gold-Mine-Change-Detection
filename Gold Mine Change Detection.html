@@ -1,0 +1,791 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD HTML 4.01//EN" "http://www.w3.org/TR/html4/strict.dtd">
+<html>
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+  <meta http-equiv="Content-Style-Type" content="text/css">
+  <title></title>
+  <meta name="Generator" content="Cocoa HTML Writer">
+  <meta name="CocoaVersion" content="2113.2">
+  <style type="text/css">
+    p.p1 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica}
+    p.p2 {margin: 0.0px 0.0px 0.0px 0.0px; font: 12.0px Helvetica; min-height: 14.0px}
+    span.Apple-tab-span {white-space:pre}
+  </style>
+</head>
+<body>
+<p class="p1">// Artisinal Gold Mine Change Detection Code //</p>
+<p class="p2"><br></p>
+<p class="p1">// IMPORTS //</p>
+<p class="p2"><br></p>
+<p class="p1">var s2 = ee.ImageCollection("COPERNICUS/S2_SR");</p>
+<p class="p1">var DSM = ee.Image("JAXA/ALOS/AW3D30/V2_2");</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// GEOMETRY AND VIS PERAMS //</p>
+<p class="p2"><br></p>
+<p class="p1">var boundary = Abora.geometry()</p>
+<p class="p1">Map.setCenter(-1.9052171710905408, 6.0599894955573905, 11);</p>
+<p class="p1">var boundaryarea = boundary.area()</p>
+<p class="p1">print('Boundary Area in km',boundaryarea.divide(1000000))</p>
+<p class="p2"><br></p>
+<p class="p1">var visParams = {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>bands: ['B4', 'B3', 'B2'],<span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>min: 0,<span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>max: 0.3,<span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>gamma: 1.2</p>
+<p class="p1">};</p>
+<p class="p1">var cloudmaskvis = {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>bands: ['classification'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>palette: ['white','black', 'green'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>min: 0,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>max: 2</p>
+<p class="p1">};</p>
+<p class="p1">var LCVis = {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>bands: ['classification'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>palette: ['006400', 'ffbb22', 'ffff4c', 'f096ff', 'fa0000', 'b4b4b4', 'f0f0f0', '0064c8', '0096a0', '00cf75', 'fae6a0'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>min: 0,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>max: 10</p>
+<p class="p1">};</p>
+<p class="p1">var ESAVis = {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>bands: ['Map'],</p>
+<p class="p1">};</p>
+<p class="p2"><br></p>
+<p class="p1">var atmovis1 = {bands:['B4','B3','B2'], min: 0.0, max: 0.2, gamma: 1}; //atmo vis</p>
+<p class="p1">var siac = require('users/marcyinfeng/utils:SIAC');</p>
+<p class="p2"><br></p>
+<p class="p1">var empty = ee.Image().byte();</p>
+<p class="p1">var outline = empty.paint({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>featureCollection: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>color: 1,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>width: 1</p>
+<p class="p1">});</p>
+<p class="p1">Map.addLayer(outline, {palette: 'FFFFFF'}, 'Edges');</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// CLOUD MASK //</p>
+<p class="p1">// Training SVM classifier to detect clouds</p>
+<p class="p2"><br></p>
+<p class="p1">CloudMaskData = CloudMaskData.remap(['clouds','shaddows','other'],[1,2,3],'Class');</p>
+<p class="p2"><br></p>
+<p class="p1">var cloudclassifier = ee.Classifier.libsvm({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>kernelType: 'RBF',<span class="Apple-converted-space">                  </span>//hyper peram tuned in paper</p>
+<p class="p1"><span class="Apple-converted-space">  </span>gamma: 1, <span class="Apple-converted-space">                          </span>//radius of effect to grouping</p>
+<p class="p1"><span class="Apple-converted-space">  </span>cost: 100, <span class="Apple-converted-space">                            </span>//cost to each wrong data point</p>
+<p class="p1">})</p>
+<p class="p1">.train({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>features: CloudMaskData, <span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>classProperty: 'Class',</p>
+<p class="p1"><span class="Apple-converted-space">  </span>inputProperties: ['B1','B2','B3','B4','B5','B6','B7','B8','B9','B11','B12',/*'NDVI'*/]</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// DATA FUSION //</p>
+<p class="p1">// Function adds several indcies to the image</p>
+<p class="p2"><br></p>
+<p class="p1">var addIndices = function(image) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var ndvi = image.normalizedDifference(['B8', 'B4']).rename(['ndvi']); <span class="Apple-converted-space">    </span>//norm dif veg</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var ndbi = image.normalizedDifference(['B11', 'B8']).rename(['ndbi']);<span class="Apple-converted-space">    </span>//norm dif built up index</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var mndwi = image.normalizedDifference(['B3', 'B11']).rename(['mndwi']);<span class="Apple-converted-space">  </span>//mod norm dif water</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var bsi = image.expression( <span class="Apple-converted-space">                                              </span>//bare soil</p>
+<p class="p1"><span class="Apple-converted-space">      </span>'(( X + Y ) - (A + B)) /(( X + Y ) + (A + B)) ', {</p>
+<p class="p1"><span class="Apple-converted-space">        </span>'X': image.select('B11'), //swir1</p>
+<p class="p1"><span class="Apple-converted-space">        </span>'Y': image.select('B4'),<span class="Apple-converted-space">  </span>//red</p>
+<p class="p1"><span class="Apple-converted-space">        </span>'A': image.select('B8'), // nir</p>
+<p class="p1"><span class="Apple-converted-space">        </span>'B': image.select('B2'), // blue</p>
+<p class="p1"><span class="Apple-converted-space">  </span>}).rename('bsi');</p>
+<p class="p1"><span class="Apple-converted-space">  </span>return image.addBands(ndvi).addBands(ndbi).addBands(mndwi).addBands(bsi)</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// PCA //</p>
+<p class="p1">// Function takes in an image and outputs the same image with PCA bands added</p>
+<p class="p2"><br></p>
+<p class="p1">function PCA(maskedImage){</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var image = maskedImage.unmask()</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var scale = 20;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var region = boundary;</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var bandNames = image.bandNames();</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var meanDict = image.reduceRegion({</p>
+<p class="p1"><span class="Apple-converted-space">    </span>reducer: ee.Reducer.mean(),</p>
+<p class="p1"><span class="Apple-converted-space">    </span>geometry: region,</p>
+<p class="p1"><span class="Apple-converted-space">    </span>scale: scale,</p>
+<p class="p1"><span class="Apple-converted-space">    </span>maxPixels: 1e9,</p>
+<p class="p1"><span class="Apple-converted-space">    </span>bestEffort: true,</p>
+<p class="p1"><span class="Apple-converted-space">    </span>tileScale: 16</p>
+<p class="p1"><span class="Apple-converted-space">  </span>});</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var means = ee.Image.constant(meanDict.values(bandNames));</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var centered = image.subtract(means);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var getNewBandNames = function(prefix) {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var seq = ee.List.sequence(1, bandNames.length());</p>
+<p class="p1"><span class="Apple-converted-space">    </span>return seq.map(function(b) {</p>
+<p class="p1"><span class="Apple-converted-space">      </span>return ee.String(prefix).cat(ee.Number(b).int());</p>
+<p class="p1"><span class="Apple-converted-space">    </span>});</p>
+<p class="p1"><span class="Apple-converted-space">  </span>};</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var getPrincipalComponents = function(centered, scale, region) {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var arrays = centered.toArray();</p>
+<p class="p2"><span class="Apple-converted-space">    </span></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var covar = arrays.reduceRegion({</p>
+<p class="p1"><span class="Apple-converted-space">      </span>reducer: ee.Reducer.centeredCovariance(),</p>
+<p class="p1"><span class="Apple-converted-space">      </span>geometry: region,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>scale: scale,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>maxPixels: 1e9,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>bestEffort: true,</p>
+<p class="p1"><span class="Apple-converted-space">      </span>tileScale: 16</p>
+<p class="p1"><span class="Apple-converted-space">    </span>});</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var covarArray = ee.Array(covar.get('array'));</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var eigens = covarArray.eigen();</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var eigenValues = eigens.slice(1, 0, 1);</p>
+<p class="p2"><span class="Apple-converted-space">    </span></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var eigenValuesList = eigenValues.toList().flatten()</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var total = eigenValuesList.reduce(ee.Reducer.sum())</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var percentageVariance = eigenValuesList.map(function(item) {</p>
+<p class="p1"><span class="Apple-converted-space">      </span>return (ee.Number(item).divide(total)).multiply(100).format('%.2f')</p>
+<p class="p1"><span class="Apple-converted-space">    </span>})</p>
+<p class="p1"><span class="Apple-converted-space">    </span>//print('Percentage Variance of Each Component', percentageVariance)</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var eigenVectors = eigens.slice(1, 1);</p>
+<p class="p1"><span class="Apple-converted-space">    </span>var arrayImage = arrays.toArray(1);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var principalComponents = ee.Image(eigenVectors).matrixMultiply(arrayImage);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>var sdImage = ee.Image(eigenValues.sqrt())</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.arrayProject([0]).arrayFlatten([getNewBandNames('sd')]);</p>
+<p class="p2"><br></p>
+<p class="p1"><span class="Apple-converted-space">    </span>return principalComponents</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.arrayProject([0])</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.arrayFlatten([getNewBandNames('pc')])</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.divide(sdImage);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>};</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var pcImage = getPrincipalComponents(centered, scale, region);</p>
+<p class="p1"><span class="Apple-converted-space">  </span>return pcImage.mask(maskedImage.mask());</p>
+<p class="p1">}</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// FILTER AND COMPOSITE 2020 IMAGE //</p>
+<p class="p2"><br></p>
+<p class="p1">var filtered = s2</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.date('2020-01-01', '2020-12-31'))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.bounds(boundary))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.select('B.*')</p>
+<p class="p1">var composite = filtered.median().clip(boundary).divide(10000)</p>
+<p class="p1">var composite = addIndices(composite);</p>
+<p class="p2"><br></p>
+<p class="p1">Map.addLayer(composite, visParams, 'RGB20');</p>
+<p class="p2"><br></p>
+<p class="p1">var cloudmask = composite.classify(cloudclassifier);</p>
+<p class="p1">var cloudmask = cloudmask.gt(1.5).selfMask();</p>
+<p class="p1">Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask 2020');</p>
+<p class="p1">var composite = composite.updateMask(cloudmask)</p>
+<p class="p2"><br></p>
+<p class="p1">var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])</p>
+<p class="p1">var composite = composite.addBands(pca)</p>
+<p class="p2"><br></p>
+<p class="p1">var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');</p>
+<p class="p1">var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');</p>
+<p class="p1">var composite = composite.addBands(elev).addBands(slope);</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// DATASET GENERATION //</p>
+<p class="p2"><br></p>
+<p class="p1">// ESA 10m WORLD COVER DATASET //</p>
+<p class="p1">var world_cover = ee.ImageCollection("ESA/WorldCover/v100").first();</p>
+<p class="p1">Map.addLayer(world_cover, ESAVis, "ESA Landcover");</p>
+<p class="p1">print('ESA Landcover', world_cover)</p>
+<p class="p2"><br></p>
+<p class="p1">var globalseed = 10</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 10 TREE</p>
+<p class="p1">var dataset10 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset10 = dataset10.filter(ee.Filter.equals('Map', 10));</p>
+<p class="p1">var dataset10 = dataset10.randomColumn();</p>
+<p class="p1">var dataset10 = dataset10.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset10', dataset10);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 20 SHRUB</p>
+<p class="p1">var dataset20 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset20 = dataset20.filter(ee.Filter.equals('Map', 20));</p>
+<p class="p1">var dataset20 = dataset20.randomColumn('random');</p>
+<p class="p1">var dataset20 = dataset20.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset20', dataset20);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 30 GRASS</p>
+<p class="p1">var dataset30 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset30 = dataset30.filter(ee.Filter.equals('Map', 30));</p>
+<p class="p1">var dataset30 = dataset30.randomColumn('random');</p>
+<p class="p1">var dataset30 = dataset30.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset30', dataset30);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 40 CROP</p>
+<p class="p1">var dataset40 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset40 = dataset40.filter(ee.Filter.equals('Map', 40));</p>
+<p class="p1">var dataset40 = dataset40.randomColumn('random');</p>
+<p class="p1">var dataset40 = dataset40.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset40', dataset40);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 50 URBAN</p>
+<p class="p1">var dataset50 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 5000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset50 = dataset50.filter(ee.Filter.equals('Map', 50));</p>
+<p class="p1">var dataset50 = dataset50.randomColumn('random');</p>
+<p class="p1">var dataset50 = dataset50.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset50', dataset50);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 60 BARE</p>
+<p class="p1">var dataset60 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 5000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset60 = dataset60.filter(ee.Filter.equals('Map', 60));</p>
+<p class="p1">var dataset60 = dataset60.randomColumn('random');</p>
+<p class="p1">var dataset60 = dataset60.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset60', dataset60);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 70</p>
+<p class="p1">// var dataset70 = world_cover.sample({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// var dataset70 = dataset70.filter(ee.Filter.equals('Map', 70));</p>
+<p class="p1">// var dataset70 = dataset70.randomColumn('random');</p>
+<p class="p1">// var dataset70 = dataset70.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">// print('Dataset70', dataset70);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 80 WATER</p>
+<p class="p1">var dataset80 = world_cover.sample({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1"><span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset80 = dataset80.filter(ee.Filter.equals('Map', 80));</p>
+<p class="p1">var dataset80 = dataset80.randomColumn('random');</p>
+<p class="p1">var dataset80 = dataset80.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">print('Dataset80', dataset80);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 90</p>
+<p class="p1">// var dataset90 = world_cover.sample({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// var dataset90 = dataset90.filter(ee.Filter.equals('Map', 90));</p>
+<p class="p1">// var dataset90 = dataset90.randomColumn('random');</p>
+<p class="p1">// var dataset90 = dataset90.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">// print('Dataset90', dataset90);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 95</p>
+<p class="p1">// var dataset95 = world_cover.sample({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// var dataset95 = dataset95.filter(ee.Filter.equals('Map', 95));</p>
+<p class="p1">// var dataset95 = dataset95.randomColumn('random');</p>
+<p class="p1">// var dataset95 = dataset95.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">// print('Dataset95', dataset95);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset For 100</p>
+<p class="p1">// var dataset100 = world_cover.sample({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>geometries: true,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>numPixels: 2000,<span class="Apple-converted-space">  </span>//max 5000</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>seed: globalseed</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// var dataset100 = dataset100.filter(ee.Filter.equals('Map', 100));</p>
+<p class="p1">// var dataset100 = dataset100.randomColumn('random');</p>
+<p class="p1">// var dataset100 = dataset100.filter(ee.Filter.lt('random', 1));</p>
+<p class="p1">// print('Dataset100', dataset100);</p>
+<p class="p2"><br></p>
+<p class="p1">// Dataset Merging</p>
+<p class="p1">var dataset = dataset10 //Tree</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset20) <span class="Apple-converted-space">  </span>//Shrub</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset30) <span class="Apple-converted-space">  </span>//Grass</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.merge(dataset40) <span class="Apple-converted-space">    </span>//Crop</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.merge(dataset50) <span class="Apple-converted-space">    </span>//Built up</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.merge(dataset60) <span class="Apple-converted-space">    </span>//Bare</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset70) <span class="Apple-converted-space">  </span>//Snow</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.merge(dataset80) <span class="Apple-converted-space">    </span>//Water</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset90)</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset95)</p>
+<p class="p1"><span class="Apple-converted-space">  </span>//.merge(dataset100);</p>
+<p class="p2"><br></p>
+<p class="p1">// Data Points Visualisation</p>
+<p class="p1">Map.addLayer(dataset,<span class="Apple-tab-span">	</span>null, 'New Data Points');</p>
+<p class="p1">print('Total Dataset', dataset);</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// DATASET SPLITTING //</p>
+<p class="p2"><br></p>
+<p class="p1">var dataset = dataset.remap([10,20,30,40,50,60,70,80,90,95,100], [0,1,2,3,4,5,6,7,8,9,10], 'Map')</p>
+<p class="p1">var dataset = dataset.randomColumn();</p>
+<p class="p1">var trainingdata = dataset.filter(ee.Filter.lt('random', 0.7));<span class="Apple-converted-space">      </span>// Use 0.7 for larger dataset</p>
+<p class="p1">var validationdata = dataset.filter(ee.Filter.gte('random', 0.7));</p>
+<p class="p1">print(trainingdata)</p>
+<p class="p1">//Map.addLayer(validationdata, null, 'Validation Data Points')</p>
+<p class="p2"><br></p>
+<p class="p1">var training = composite.sampleRegions({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>collection: trainingdata,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>properties: ['Map'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>tileScale: 16</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">print('Training Dataset', training)</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// SVM CLASSIFIER //<span class="Apple-converted-space">  </span>Replaced by main RF classifier as SVM wasnt working correctly</p>
+<p class="p2"><br></p>
+<p class="p1">// var classifier = ee.Classifier.libsvm({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>svmType: 'C_SVC',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>kernelType: 'RBF',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>gamma: 0.1, <span class="Apple-converted-space">                          </span>//radius of effect to grouping</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>cost: 7, <span class="Apple-converted-space">                            </span>//cost to each wrong data point</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>//decisionProcedure: 'Margin',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>//shrinking: false</p>
+<p class="p1">// })</p>
+<p class="p1">// .train({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>features: training, <span class="Apple-converted-space"> </span></p>
+<p class="p1">// <span class="Apple-converted-space">  </span>classProperty: 'Map',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>inputProperties: composite.bandNames()</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// RF CLASSIFIER //</p>
+<p class="p1">var classifier = ee.Classifier.smileRandomForest(32) //hyperperam tuned</p>
+<p class="p1">.train({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>features: training, <span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>classProperty: 'Map',</p>
+<p class="p1"><span class="Apple-converted-space">  </span>inputProperties: composite.bandNames()</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// 2020 //</p>
+<p class="p2"><br></p>
+<p class="p1">var classified = composite.classify(classifier);</p>
+<p class="p1">Map.addLayer(classified, LCVis, '2020');</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// ACCURACY ASSESSMENT //</p>
+<p class="p2"><br></p>
+<p class="p1">var classified_test = classified.sampleRegions({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>collection: validationdata,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>properties: ['Map'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>tileScale: 16</p>
+<p class="p1">});</p>
+<p class="p2"><span class="Apple-converted-space">  </span></p>
+<p class="p1">var testConfusionMatrix = classified_test.errorMatrix('classification','Map')</p>
+<p class="p2"><br></p>
+<p class="p1">print("Overall Accuracy", testConfusionMatrix.accuracy());</p>
+<p class="p1">print('Confusion Matrix', testConfusionMatrix);</p>
+<p class="p1">print("Consumer's Accuracy", testConfusionMatrix.consumersAccuracy());</p>
+<p class="p1">print("Producer's Accuracy", testConfusionMatrix.producersAccuracy());</p>
+<p class="p1">print("Kappa", testConfusionMatrix.kappa());<span class="Apple-converted-space">  </span>//ballence dataset and see effect on kappa</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// RF HYPERPERAMETER TUNING //</p>
+<p class="p2"><br></p>
+<p class="p1">print(classifier.explain())</p>
+<p class="p2"><br></p>
+<p class="p1">var test = composite.sampleRegions({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>collection: validationdata,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>properties: ['Map'],</p>
+<p class="p1"><span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>tileScale: 16</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var numTreesList = ee.List.sequence(50, 100, 1);</p>
+<p class="p2"><br></p>
+<p class="p1">var accuracies = numTreesList.map(function(numTrees) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var classifier = ee.Classifier.smileRandomForest(numTrees)</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.train({</p>
+<p class="p1"><span class="Apple-converted-space">        </span>features: training,</p>
+<p class="p1"><span class="Apple-converted-space">        </span>classProperty: 'Map',</p>
+<p class="p1"><span class="Apple-converted-space">        </span>inputProperties: composite.bandNames()</p>
+<p class="p1"><span class="Apple-converted-space">      </span>});</p>
+<p class="p1"><span class="Apple-converted-space">  </span>return test</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.classify(classifier)</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.errorMatrix('Map', 'classification')</p>
+<p class="p1"><span class="Apple-converted-space">    </span>//.kappa();</p>
+<p class="p1"><span class="Apple-converted-space">    </span>.accuracy();</p>
+<p class="p1">});</p>
+<p class="p2"><br></p>
+<p class="p1">var chart = ui.Chart.array.values({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>array: ee.Array(accuracies),</p>
+<p class="p1"><span class="Apple-converted-space">  </span>axis: 0,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>xLabels: numTreesList</p>
+<p class="p1"><span class="Apple-converted-space">  </span>}).setOptions({</p>
+<p class="p1"><span class="Apple-converted-space">      </span>title: 'Hyperparameter Tuning for the numberOfTrees Parameters',</p>
+<p class="p1"><span class="Apple-converted-space">      </span>vAxis: {title: 'Validation Accuracy'},</p>
+<p class="p1"><span class="Apple-converted-space">      </span>hAxis: {title: 'Number of Tress', gridlines: {count: 15}}</p>
+<p class="p1"><span class="Apple-converted-space">  </span>});</p>
+<p class="p1">print(chart)</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><span class="Apple-converted-space"> </span></p>
+<p class="p1">// SVM HYPERPERAMETER TUNING // <span class="Apple-converted-space">  </span>Replaced SVM grid search with RF graph above</p>
+<p class="p2"><br></p>
+<p class="p1">// var composite_test = composite.sampleRegions({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>collection: validationdata,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>properties: ['Map'],</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>tileScale: 16</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// var gammalist = ee.List.sequence(0, 2, 0.1);</p>
+<p class="p1">// var costlist = ee.List.sequence(1, 30, 1);</p>
+<p class="p2"><br></p>
+<p class="p1">// var accuracies = gammalist.map(function(gamma) {</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>return costlist.map(function(cost) {</p>
+<p class="p1">// <span class="Apple-converted-space">    </span>var classifier = ee.Classifier.libsvm({</p>
+<p class="p1">// <span class="Apple-converted-space">        </span>kernelType: 'RBF',</p>
+<p class="p1">// <span class="Apple-converted-space">        </span>gamma: gamma, <span class="Apple-converted-space">                  </span>//radius of effect to grouping</p>
+<p class="p1">// <span class="Apple-converted-space">        </span>cost: cost<span class="Apple-converted-space">                      </span>//cost to each wrong data point</p>
+<p class="p1">// <span class="Apple-converted-space">    </span>})</p>
+<p class="p1">// <span class="Apple-converted-space">    </span>.train({</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>features: training,</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>classProperty: 'Map',</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>inputProperties: composite.bandNames()</p>
+<p class="p1">// <span class="Apple-converted-space">    </span>});</p>
+<p class="p2"><br></p>
+<p class="p1">// <span class="Apple-converted-space">    </span>var accuracy = composite_test</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>.classify(classifier)</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>.errorMatrix('Map', 'classification')</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>.accuracy();</p>
+<p class="p2"><br></p>
+<p class="p1">// <span class="Apple-converted-space">    </span>return ee.Feature(null, {</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>'accuracy': accuracy,</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>'Gamma': gamma,</p>
+<p class="p1">// <span class="Apple-converted-space">      </span>'Cost': cost})</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>})</p>
+<p class="p1">// }).flatten()</p>
+<p class="p1">// var resultFC = ee.FeatureCollection(accuracies)</p>
+<p class="p2"><br></p>
+<p class="p1">// Export.table.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>collection: resultFC,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: 'Gamma_Cost_Tuning_Results',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'earthengine',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: 'Gamma_Cost',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileFormat: 'CSV'})</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// FIRST DATE //</p>
+<p class="p2"><br></p>
+<p class="p1">var filtered = s2</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.date('2019-01-01', '2019-12-31'))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.bounds(boundary))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.select('B.*')</p>
+<p class="p1">var composite = filtered.median().clip(boundary).divide(10000)<span class="Apple-converted-space"> </span></p>
+<p class="p1">var composite = addIndices(composite);</p>
+<p class="p2"><br></p>
+<p class="p1">Map.addLayer(composite, visParams, 'RGB FIRST');</p>
+<p class="p2"><br></p>
+<p class="p1">var cloudmask = composite.classify(cloudclassifier);</p>
+<p class="p1">var cloudmask = cloudmask.gt(1.5).selfMask();</p>
+<p class="p1">Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask FIRST');</p>
+<p class="p1">var composite = composite.updateMask(cloudmask)</p>
+<p class="p2"><br></p>
+<p class="p1">var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])</p>
+<p class="p1">var composite = composite.addBands(pca)</p>
+<p class="p2"><br></p>
+<p class="p1">var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');</p>
+<p class="p1">var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');</p>
+<p class="p1">var composite = composite.addBands(elev).addBands(slope);</p>
+<p class="p2"><br></p>
+<p class="p1">var classified = composite.classify(classifier);</p>
+<p class="p1">Map.addLayer(classified, LCVis, 'LC FIRST');</p>
+<p class="p2"><br></p>
+<p class="p1">var classified19 = classified;</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// SECOND DATE //</p>
+<p class="p2"><br></p>
+<p class="p1">var filtered = s2</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.date('2021-01-01', '2021-12-31'))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.filter(ee.Filter.bounds(boundary))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>.select('B.*')</p>
+<p class="p1">var composite = filtered.median().clip(boundary).divide(10000)<span class="Apple-converted-space"> </span></p>
+<p class="p1">var composite = addIndices(composite);</p>
+<p class="p2"><br></p>
+<p class="p1">Map.addLayer(composite, visParams, 'RGB SECOND');</p>
+<p class="p2"><br></p>
+<p class="p1">var cloudmask = composite.classify(cloudclassifier);</p>
+<p class="p1">var cloudmask = cloudmask.gt(1.5).selfMask();</p>
+<p class="p1">Map.addLayer(cloudmask, cloudmaskvis, 'Cloud Mask SECOND');</p>
+<p class="p1">var composite = composite.updateMask(cloudmask)</p>
+<p class="p2"><br></p>
+<p class="p1">var pca = PCA(composite).select(['pc1', 'pc2', 'pc3'])</p>
+<p class="p1">var composite = composite.addBands(pca)</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">var elev = DSM.select('AVE_DSM').divide(2000).rename('elev');</p>
+<p class="p1">var slope = ee.Terrain.slope(DSM.select('AVE_DSM')).divide(30).rename('slope');</p>
+<p class="p1">var composite = composite.addBands(elev).addBands(slope);</p>
+<p class="p2"><br></p>
+<p class="p1">var classified = composite.classify(classifier);</p>
+<p class="p1">Map.addLayer(classified, LCVis, 'LC SECOND');</p>
+<p class="p2"><br></p>
+<p class="p1">var classified21 = classified;</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// Displaying Second Date PCA Image</p>
+<p class="p1">// var pcaVisParams = {bands: ['pc1', 'pc2', 'pc3'], min: -2, max: 2};</p>
+<p class="p1">// Map.addLayer(pca, pcaVisParams, 'Principal Components');</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// CHANGE IMAGE GENERATION //</p>
+<p class="p2"><br></p>
+<p class="p1">var classified19 = classified19.remap([0, 1, 2, 3,4,5,6,7,8,9,10], [1, 2, 3, 4,5,6,7,8,9,10,11])</p>
+<p class="p1">var classified21 = classified21.remap([0, 1, 2, 3,4,5,6,7,8,9,10], [1, 2, 3, 4,5,6,7,8,9,10,11])</p>
+<p class="p2"><br></p>
+<p class="p1">var classes = [1,2,3,4,5,6,7,8,9,10,11];</p>
+<p class="p2"><br></p>
+<p class="p1">var changes = ee.ImageCollection(ee.List(</p>
+<p class="p1"><span class="Apple-converted-space">  </span>classes.map(function (from, i) {</p>
+<p class="p1"><span class="Apple-converted-space">    </span>return classes.map(function (to,<span class="Apple-converted-space">  </span>j) {</p>
+<p class="p1"><span class="Apple-converted-space">      </span>var changeValue = classes.length * i + j + 1</p>
+<p class="p1"><span class="Apple-converted-space">      </span>return classified19.eq(from)</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.and(classified21.eq(to))</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.multiply(changeValue)</p>
+<p class="p1"><span class="Apple-converted-space">      </span>.int8()</p>
+<p class="p1"><span class="Apple-converted-space">    </span>})</p>
+<p class="p1"><span class="Apple-converted-space">  </span>})</p>
+<p class="p1">).flatten()).reduce(ee.Reducer.sum());</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">var changebt = changes.eq(56);<span class="Apple-converted-space">  </span>//changes value 56 = change from bare to tree class</p>
+<p class="p1">//var changeut = changes.eq(45);</p>
+<p class="p1">//var changegt = changes.eq(23);</p>
+<p class="p2"><br></p>
+<p class="p1">var forrestregrowth = changebt;//.add(changeut);//.add(changegt);</p>
+<p class="p1">var forrestregrowth = forrestregrowth.gt(0.5).selfMask();</p>
+<p class="p1">Map.addLayer(forrestregrowth, {min:0, max:1, palette: ['white', '#00FF00']}, 'Vegetation Regrowth')</p>
+<p class="p2"><br></p>
+<p class="p1">var changetb = changes.eq(6); <span class="Apple-converted-space">  </span>//changes value 6 = change from tree to bare class</p>
+<p class="p1">//var changetu = changes.eq(5);</p>
+<p class="p1">//var changetg = changes.eq(3);</p>
+<p class="p2"><br></p>
+<p class="p1">var deforrest = changetb;</p>
+<p class="p1">var deforrest = deforrest.gt(0.5).selfMask();</p>
+<p class="p1">Map.addLayer(deforrest, {min:0, max:1, palette: ['white', '#ff0000']}, 'New Mine Activity')</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// Number of pixels changed between classes</p>
+<p class="p1">var merged = classified19.multiply(100).add(classified21).rename('transitions')</p>
+<p class="p2"><br></p>
+<p class="p1">var transitionMatrix = merged.reduceRegion({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>reducer: ee.Reducer.frequencyHistogram(),<span class="Apple-converted-space"> </span></p>
+<p class="p1"><span class="Apple-converted-space">  </span>geometry: boundary,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>maxPixels: 1e10,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>scale:16,</p>
+<p class="p1"><span class="Apple-converted-space">  </span>tileScale: 16</p>
+<p class="p1">})</p>
+<p class="p2"><br></p>
+<p class="p1">print('Pixel Transitions', transitionMatrix.get('transitions'))<span class="Apple-converted-space"> </span></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// EXPORTS //</p>
+<p class="p2"><br></p>
+<p class="p1">// Vegitation Regrowth</p>
+<p class="p1">// Export.image.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>image: forrestregrowth,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: 'TOA_RE_',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: 'TOA_RE_',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>maxPixels: 1e9,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'GEE Final Images'</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// Deforestation</p>
+<p class="p1">// Export.image.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>image: deforrest,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: 'TOA_DE_',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: 'TOA_DE_',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>maxPixels: 1e9,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'GEE Final Images'</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// RGB Image</p>
+<p class="p1">// var filtered = s2</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.date('2021-01-01', '2021-12-31'))</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.bounds(boundary))</p>
+<p class="p1">// // .map(cloudmasker)</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.select('B.*')</p>
+<p class="p1">// var exportimage = filtered.median().clip(boundary).divide(10000)<span class="Apple-converted-space"> </span></p>
+<p class="p2"><br></p>
+<p class="p1">// Classification</p>
+<p class="p1">// Export.image.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>image: classified21.select('classification'),</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: '21LC',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: '21LC',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>scale: 10,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>region: boundary,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>maxPixels: 1e9,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'GEE Final Images'</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// Boundary Polygon</p>
+<p class="p1">// var fcboundary = ee.FeatureCollection(boundary);</p>
+<p class="p1">// Export.table.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>collection: fcboundary,</p>
+<p class="p2"><br></p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'GEE Images'</p>
+<p class="p1">// });</p>
+<p class="p2"><br></p>
+<p class="p1">// Training Data</p>
+<p class="p1">// Export.table.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>collection: training,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: 'Training Data',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'earthengine',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: 'Training Data',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileFormat: 'CSV'})</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// EXPORT AVERAGE SPECTURAL SIGNATURE OF CLASSES //</p>
+<p class="p2"><br></p>
+<p class="p1">var bands = composite.bandNames()</p>
+<p class="p1">var numBands = bands.length()</p>
+<p class="p1">var bandsWithClass = bands.add('Map')</p>
+<p class="p1">var classIndex = bandsWithClass.indexOf('Map')</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">var combinedReducer = ee.Reducer.mean().combine({</p>
+<p class="p1"><span class="Apple-converted-space">  </span>reducer2: ee.Reducer.stdDev(),</p>
+<p class="p1"><span class="Apple-converted-space">  </span>sharedInputs: true})</p>
+<p class="p2"><span class="Apple-converted-space">  </span></p>
+<p class="p1">var repeatedReducer = combinedReducer.repeat(numBands).group(classIndex)</p>
+<p class="p2"><br></p>
+<p class="p1">var pointstats = training.reduceColumns({</p>
+<p class="p1"><span class="Apple-converted-space">    </span>selectors: bands.add('Map'),</p>
+<p class="p1"><span class="Apple-converted-space">    </span>reducer: repeatedReducer,</p>
+<p class="p1">})</p>
+<p class="p2"><br></p>
+<p class="p1">var groups = ee.List(pointstats.get('groups'))</p>
+<p class="p2"><br></p>
+<p class="p1">var classNames = ee.List(['tree', 'shrub', 'grass', 'crop','urban','bare','7','water','9','10','11','12','13'])</p>
+<p class="p2"><br></p>
+<p class="p1">var fc = ee.FeatureCollection(groups.map(function(item) {</p>
+<p class="p1"><span class="Apple-converted-space">  </span>// Extract the means</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var values = ee.Dictionary(item).get('mean')</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var groupNumber = ee.Dictionary(item).get('group')</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var properties = ee.Dictionary.fromLists(bands, values)</p>
+<p class="p1"><span class="Apple-converted-space">  </span>var withClass = properties.set('class', classNames.get(groupNumber))</p>
+<p class="p1"><span class="Apple-converted-space">  </span>return ee.Feature(null, withClass)</p>
+<p class="p1">}))</p>
+<p class="p2"><br></p>
+<p class="p1">// Export.table.toDrive({</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>collection: fc,</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>description: 'Spectral_Class_Results',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>folder: 'GEE Final Images',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileNamePrefix: 'spectralresults',</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>fileFormat: 'CSV'})</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// ATMOSPHERIC CORRECTION //<span class="Apple-converted-space">  </span>Atempted atmospheric correction</p>
+<p class="p2"><br></p>
+<p class="p1">// var atmovis1 = {bands:"B4,B3,B2", min: 0.0, max: 0.2, gamma: 1};</p>
+<p class="p1">// var visParams = {</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>bands: ['B4', 'B3', 'B2'],<span class="Apple-converted-space"> </span></p>
+<p class="p1">// <span class="Apple-converted-space">  </span>min: 0,<span class="Apple-converted-space"> </span></p>
+<p class="p1">// <span class="Apple-converted-space">  </span>max: 0.3,<span class="Apple-converted-space"> </span></p>
+<p class="p1">// <span class="Apple-converted-space">  </span>gamma: 1.2</p>
+<p class="p1">// };</p>
+<p class="p2"><br></p>
+<p class="p1">// var filteredtoa = ee.ImageCollection("COPERNICUS/S2")</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.date('2018-01-01', '2018-12-31'))</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.filter(ee.Filter.bounds(boundary))</p>
+<p class="p1">// <span class="Apple-converted-space">  </span>.select('B.*')</p>
+<p class="p1">// var composite = filteredtoa.median().clip(boundary).divide(1000)<span class="Apple-converted-space"> </span></p>
+<p class="p1">// print(composite, 'comp')</p>
+<p class="p2"><br></p>
+<p class="p1">// Map.addLayer(composite, visParams, 'RGB19');</p>
+<p class="p2"><br></p>
+<p class="p1">// <span class="Apple-converted-space">                </span>//['B1','B2','B3','B4','B5','B6','B7','B8','B8A','B11','B12']</p>
+<p class="p1">// // - Import the SIAC atmospheric correction module</p>
+<p class="p1">// var siac = require('users/marcyinfeng/utils:SIAC');</p>
+<p class="p2"><br></p>
+<p class="p1">// // - Apply SIAC and retrieve bottom of atmosphere (BOA) reflectance</p>
+<p class="p1">// // var L7_boa = siac.get_l7_sur(L7_col.first());</p>
+<p class="p1">// // var L8_boa = siac.get_l8_sur(L8_col.first());<span class="Apple-converted-space"> </span></p>
+<p class="p1">// var atmocorrect = siac.get_sur(filteredtoa.first().clip(boundary));<span class="Apple-converted-space"> </span></p>
+<p class="p1">// print(atmocorrect)</p>
+<p class="p2"><br></p>
+<p class="p2"><br></p>
+<p class="p1">// - Check and visualization</p>
+<p class="p1">// var Color_comp_01 = {bands:"B4,B3,B2", min: 0.0, max: 0.2, gamma: 1};</p>
+<p class="p1">// var Color_comp =<span class="Apple-converted-space">    </span>{bands:"B4,B3,B2", min:200, max:2000, gamma: 1};</p>
+<p class="p1">// Map.addLayer(composite, Color_comp, 'TOA');</p>
+<p class="p1">// Map.addLayer(atmocorrect, atmovis1, 'BOA');</p>
+<p class="p1">// Map.centerObject(filteredtoa.first())</p>
+</body>
+</html>
