@@ -1,3 +1,4 @@
+*.js linguist-language=Java
 Gold Mine Detection Code
 
 // IMPORTS //
